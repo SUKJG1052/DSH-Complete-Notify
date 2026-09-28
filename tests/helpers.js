@@ -2,7 +2,7 @@
 //   - stub `window.__ModuleLoader__` 捕获工厂；
 //   - stub `require('react')` 提供无操作 hooks；
 //   - 工厂顶层只定义函数/常量、不做 DOM 访问，因此可安全执行；
-//   - 通过 exports.__test 拿到纯状态机 createWatcher。
+//   - 通过 exports.__test 拿到纯状态机 createWatcher 与音效合成入口 playSound。
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -35,6 +35,7 @@ const requireStub = (spec) => {
 
 const bundle = handoff.factory(requireStub)
 
+export { windowStub }
 export const createWatcher = bundle.__test.createWatcher
 export const summarizeRun = bundle.__test.summarizeRun
 export const formatDuration = bundle.__test.formatDuration
@@ -50,6 +51,11 @@ export const soundIdForKind = bundle.__test.soundIdForKind
 export const defaultSounds = bundle.__test.defaultSounds
 export const detectPlatform = bundle.__test.detectPlatform
 export const soundPresetIds = bundle.__test.soundPresetIds
+export const playSound = bundle.__test.playSound
+export const openSessionInView = bundle.__test.openSessionInView
+export const isPendingStatus = bundle.__test.isPendingStatus
+export const isCompletionUnread = bundle.__test.isCompletionUnread
+export const MASTER_GAIN = bundle.__test.MASTER_GAIN
 
 /** 简体中文文案 stub（t('key') → 值）。 */
 export const tZh = (key) => ({
@@ -62,8 +68,12 @@ export const tZh = (key) => ({
   maxTokensTitle: '达到 token 上限',
 })[key] ?? key
 
-/** 构造会话列表快照（SessionListState 的最小形态）。 */
-export function snapOf(entries, current) {
+/**
+ * 构造会话列表快照（SessionListState 的真实形态：只有 id/displayTitle/running/
+ * retainedBy/blank/updatedAt 等字段——`projectList()` 既不产出 `completed`，也从来
+ * 没有 `pendingInteraction`，更没有 `current`；那些信号在 sessionStatus 里）。
+ */
+export function snapOf(entries) {
   const ids = []
   const byId = {}
   for (const e of entries) {
@@ -72,10 +82,29 @@ export function snapOf(entries, current) {
       id: e.id,
       displayTitle: e.title || e.id,
       running: e.running === true,
-      ...(e.completed === true ? { completed: true } : {}),
-      ...(e.pending === true ? { pendingInteraction: { kind: 'question' } } : {}),
+      retainedBy: e.mainView === true ? { mainView: 1 } : {},
+      blank: false,
+      updatedAt: 0,
       ...(e.origin ? { origin: e.origin } : {}),
     }
   }
-  return { ids, byId, current }
+  return { ids, byId, phase: 'ready' }
+}
+
+/**
+ * 构造 sessionStatus 快照（ReadonlyMap<sessionId, SessionStatus>），即
+ * `useSessionStatus` 下发的那个值。`pending` → pendingInteraction，
+ * `unread` → completionUnread。
+ */
+export function statusOf(entries) {
+  const map = new Map()
+  for (const e of entries) {
+    if (e.pending !== true && e.unread !== true && e.running !== true) continue
+    map.set(e.id, {
+      running: e.running === true,
+      pendingInteraction: e.pending === true ? { key: 'k', kind: 'question', sessionId: e.id } : undefined,
+      completionUnread: e.unread === true,
+    })
+  }
+  return map
 }

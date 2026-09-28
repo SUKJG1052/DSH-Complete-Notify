@@ -6,8 +6,11 @@ var module = { exports: {} }; var exports = module.exports;
  * dsh-complete-notify client:
  *
  * 任务完成时给「音效 + 小弹窗」提醒，纯浏览器方案：
- *   - 完成检测：shell.overlay 的标准 prop `useSessions`（会话列表快照，
- *     每条会话带 running / completed / current，与官方运行指示灯同源）；
+ *   - 完成检测：shell.overlay 的标准 prop `useSessions`（会话列表快照的
+ *     running 边缘）＋ `useSessionStatus`（ui-session 的状态快照
+ *     `Map<sessionId, { running, pendingInteraction, completionUnread }>`）；
+ *     与官方运行指示灯同源。0.1.7 起会话行不再有 `completed`，粘性完成改由
+ *     `completionUnread` 承担（旧行字段仅作 ≤0.1.5 回退）；
  *   - 音效：Web Audio API 合成双音「叮咚」，零音频文件（首次用户手势解锁）；
  *   - 页面可见 → 右上角 toast；页面在后台 → 系统通知（Web Notification）
  *     + 标题闪烁兜底；
@@ -25,6 +28,12 @@ const { useState, useEffect, useRef } = React
 const NS = 'complete-notify'
 const STORAGE_KEY = 'dsh.completeNotify.v1'
 const DEFAULT_CFG = { enabled: true, sound: true, systemNotify: true, volume: 0.6 }
+
+// 音量：滑块 0–100% → volume ∈ [0,1]；管线再乘一个固定增益，让提示音更容易被听见。
+// 声压实测（含 master 指数衰减 + 音符重叠）：100% 时最响的预设峰值 ≈0.67，默认 60%
+// 时 ≈0.40（比不加增益响约 5 dB），始终留在 [0,1] 内 —— 越过 1.0 会被输出级硬削波，
+// 那是失真而不是「更响」。改这个常量前请跑 tests/volume.test.js。
+const MASTER_GAIN = 1.75
 
 // ---------- 跨平台音效预设（Web Audio 合成，不读取系统原生声音文件） ----------
 // 每个预设只描述振荡器频率/时序/波形；因此 Windows/macOS/Linux 都能用。
@@ -243,71 +252,91 @@ function setCfg(patch) {
   return next
 }
 
+/**
+ * 阻塞（等待用户交互：提问 / 审批挂起）判定。
+ * 0.1.7 起唯一权威来源是 `sessionStatus.pendingInteraction`；会话列表行从来
+ * 没有过 `pendingInteraction` 字段，行字段回退只为兼容 ≤0.1.5。
+ */
+function isPendingStatus(status, entry) {
+  if (status && status.pendingInteraction !== undefined && status.pendingInteraction !== null) return true
+  return entry.pendingInteraction !== undefined && entry.pendingInteraction !== null
+}
+
+/**
+ * 「不在主视图时完成了」判定。0.1.7 起 `sessionStatus.completionUnread` 是权威
+ * 来源（会话行已移除 `completed`）；`entry.completed` 回退只为兼容 ≤0.1.5。
+ */
+function isCompletionUnread(status, entry) {
+  if (status && status.completionUnread === true) return true
+  return entry.completed === true
+}
+
 // ---------- 完成检测状态机（纯逻辑，可单测） ----------
 //
-// 输入：上一次 / 本次会话列表快照（{ ids, byId, current }）。
-// 输出：本次应该提醒的完成事件 [{ sessionId, title, selected }]。
+// 输入：
+//   - 上一次 / 本次会话列表快照（SessionListState：{ ids, byId, phase, … }）；
+//   - 本次的 sessionStatus 快照（ReadonlyMap<sessionId, {
+//     running, pendingInteraction, completionUnread }>，可缺省）。
+// 输出：本次应该提醒的事件 [{ sessionId, title, kind? }]（无 kind = 完成）。
 //
 // 规则：
-//  1. 会话 running: true → false 边缘 = 完成（当前选中会话的完成只有这条信号）；
-//  2. `completed` 粘性标记出现 = 「未选中时完成」的兜底信号（运行时保证只在
-//     非选中会话上置位、选中后清除）；
+//  1. 会话 running: true → false 边缘 = 完成；
+//  2. `completionUnread` 为真 = 「未在主视图时完成」的兜底信号（0.1.7 起取代
+//     已从会话行移除的 `completed` 粘性字段），一次完成只提醒一次；
 //  3. `pendingInteraction` 出现（提问/审批挂起）= 阻塞，发出 kind: 'blocked'
 //     事件（agent 可能仍在运行等待，不能只靠 running 边缘）；
 //  4. 首次快照（prev == null）只初始化、不触发（不补发历史完成/历史阻塞）；
 //  5. notified / pending 集合按 sessionId 去重；会话重新 running 时重置，
 //     允许下次再提醒；阻塞清除后可再次触发；
-//  6. origin === 'subagent' 的子代理会话过滤。
+//  6. origin === 'subagent' 的子代理会话过滤；
+//  7. 会话当前处于阻塞时不发完成提醒——提问被回答后 agent 转 idle 并不是一次
+//     「任务完成」。
 function createWatcher() {
   const state = new Map() // sessionId -> { wasRunning, notified, pending }
   return {
-    diff(prev, next) {
+    diff(prev, next, statuses) {
       const events = []
       if (next === null || next === undefined) return events
       const byId = next.byId || {}
       const ids = next.ids || []
-      const current = next.current
+      const first = prev === null || prev === undefined
+      const statusOf = (id) => {
+        if (statuses === null || statuses === undefined || typeof statuses.get !== 'function') return undefined
+        return statuses.get(id) || undefined
+      }
       const seen = new Set()
       for (const id of ids) {
         seen.add(id)
         const entry = byId[id]
         if (entry === undefined) continue
         if (entry.origin === 'subagent') continue
+        const status = statusOf(id)
+        const pending = isPendingStatus(status, entry)
+        const unread = isCompletionUnread(status, entry)
         let st = state.get(id)
         if (st === undefined) st = { wasRunning: false, notified: false, pending: false }
         if (entry.running === true) {
           // 重新开跑 = 新的完成周期
           st.wasRunning = true
           st.notified = false
-        } else if (prev === null || prev === undefined) {
-          // 首次快照：初始化；已粘性完成的旧任务预标记为已通知
-          st.wasRunning = false
-          if (entry.completed === true) st.notified = true
         } else {
           const justFinished = st.wasRunning === true
           st.wasRunning = false
-          if (st.notified === false && (justFinished || entry.completed === true)) {
+          if (first) {
+            // 首次快照：初始化；已经未读的旧完成预标记为已通知（不补发历史）
+            if (unread) st.notified = true
+          } else if (st.notified === false && pending === false && (justFinished || unread)) {
             st.notified = true
-            events.push({
-              sessionId: id,
-              title: entry.displayTitle || id,
-              selected: id === current,
-            })
+            events.push({ sessionId: id, title: entry.displayTitle || id })
           }
         }
         // 阻塞边缘：pendingInteraction 出现 → 等待反馈（提问/审批挂起）
-        const pending = entry.pendingInteraction !== undefined && entry.pendingInteraction !== null
-        if (prev === null || prev === undefined) {
+        if (first) {
           st.pending = pending // 首次快照只记录，不补发历史阻塞
-        } else if (pending && !st.pending) {
+        } else if (pending && st.pending === false) {
           st.pending = true
-          events.push({
-            sessionId: id,
-            title: entry.displayTitle || id,
-            selected: id === current,
-            kind: 'blocked',
-          })
-        } else if (!pending && st.pending) {
+          events.push({ sessionId: id, title: entry.displayTitle || id, kind: 'blocked' })
+        } else if (pending === false && st.pending === true) {
           st.pending = false
         }
         state.set(id, st)
@@ -339,7 +368,7 @@ function unlockAudio() {
 function playSound(soundId, volume) {
   const preset = SOUND_PRESETS[soundId] || SOUND_PRESETS['soft-chime']
   if (!preset || !Array.isArray(preset.notes) || preset.notes.length === 0) return
-  const vol = typeof volume === 'number' && volume >= 0 && volume <= 1 ? volume : 0.6
+  const vol = typeof volume === 'number' && volume >= 0 && volume <= 1 ? volume : DEFAULT_CFG.volume
   const ctx = ensureAudio()
   if (ctx === null) return
   const play = () => {
@@ -347,7 +376,7 @@ function playSound(soundId, volume) {
       const t0 = ctx.currentTime
       const decay = preset.decay || 0.6
       const master = ctx.createGain()
-      master.gain.setValueAtTime(vol, t0)
+      master.gain.setValueAtTime(vol * MASTER_GAIN, t0)
       master.gain.exponentialRampToValueAtTime(0.0001, t0 + decay)
       master.connect(ctx.destination)
       for (const n of preset.notes) {
@@ -693,14 +722,32 @@ function ToastItem(props) {
   )
 }
 
-// useSessions 缺失时的兜底 hook（保持 hooks 无条件调用）
+// 标准 prop 缺失时的兜底 hook（保持 hooks 无条件调用）
 function useFallbackSnap() { return null }
 
-/** 常驻挂载于 shell.overlay：订阅会话列表做完成检测，并渲染 toast 栈。 */
+/**
+ * 打开会话：0.1.7 由 `uiWorkspace.openSession()` 负责切换主视图；
+ * `sessions.open()` 是 ≤0.1.5 的旧入口（0.1.7 已移除，调用会被静默吞掉）。
+ */
+function openSessionInView(getServices, id) {
+  if (!id || typeof getServices !== 'function') return
+  try {
+    const services = getServices() || {}
+    if (services.workspace && typeof services.workspace.openSession === 'function') {
+      services.workspace.openSession(id)
+      return
+    }
+    if (services.sessions && typeof services.sessions.open === 'function') services.sessions.open(id)
+  } catch (err) { /* 打开失败不影响提醒本身 */ }
+}
+
+/** 常驻挂载于 shell.overlay：订阅会话状态做完成检测，并渲染 toast 栈。 */
 function ToastHost(props) {
-  const select = typeof props.useSessions === 'function' ? props.useSessions : useFallbackSnap
-  const snap = select((s) => s)
-  const sessions = props.sessions
+  const selectSessions = typeof props.useSessions === 'function' ? props.useSessions : useFallbackSnap
+  const selectStatus = typeof props.useSessionStatus === 'function' ? props.useSessionStatus : useFallbackSnap
+  const snap = selectSessions((s) => s)
+  const statuses = selectStatus((s) => s)
+  const getServices = typeof props.getServices === 'function' ? props.getServices : () => ({})
   const t = props.t
   const [toasts, setToasts] = useState([])
   const watcherRef = useRef(null)
@@ -708,6 +755,14 @@ function ToastHost(props) {
   const tRef = useRef(t)
   tRef.current = t
   if (watcherRef.current === null) watcherRef.current = createWatcher()
+
+  // 安装标记：快照每更新一次就换一个 effect cleanup，会把上一轮进行中的异步提醒
+  // 直接掐掉（而 notified 去重又阻止重试）→ 永久丢提醒。只在真正卸载时置 false。
+  const aliveRef = useRef(true)
+  useEffect(() => {
+    aliveRef.current = true
+    return () => { aliveRef.current = false }
+  }, [])
 
   useEffect(() => () => stopTitleFlash(), [])
 
@@ -722,17 +777,16 @@ function ToastHost(props) {
 
   useEffect(() => {
     if (snap === null) return
-    const events = watcherRef.current.diff(prevRef.current, snap)
+    const events = watcherRef.current.diff(prevRef.current, snap, statuses)
     prevRef.current = snap
     if (events.length === 0) return
     const cfg = getCfg()
     if (cfg.enabled === false) return
     const visible = document.visibilityState === 'visible'
-    let cancelled = false
     ;(async () => {
       for (const ev of events) {
-        if (cancelled) return
-        const info = collectRunInfo(sessions, ev.sessionId)
+        if (!aliveRef.current) return
+        const info = collectRunInfo(getServices().sessions, ev.sessionId)
         const statsLine = buildStatsLine(info ? info.stats : null, t)
         const fallbackRecap = cleanRecap(info ? info.answer : '')
         const eventKind = ev.kind || null // 阻塞事件自带 'blocked'
@@ -744,7 +798,7 @@ function ToastHost(props) {
         } else if (cfg.systemNotify) {
           // 系统通知发送后不可更新，先拉一次状态（本地路由，毫秒级）再发
           const info2 = await fetchInfo(ev.sessionId)
-          if (cancelled) return
+          if (!aliveRef.current) return
           const kind = eventKind || (info2 && info2.kind) || provisionalKind
           const meta = kindMeta(kind, t)
           playKindSound(kind, cfg.volume, cfg)
@@ -768,9 +822,10 @@ function ToastHost(props) {
         }
       }
     })()
-    return () => { cancelled = true }
+    // statuses 必须进依赖：阻塞状态变化时列表快照可能完全没变。
+    // 故意不返回 cleanup —— 见 aliveRef。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snap])
+  }, [snap, statuses])
 
   function pushToast(ev, statsLine, fallbackRecap, kind, duration) {
     const key = ev.sessionId + ':' + Date.now()
@@ -818,8 +873,7 @@ function ToastHost(props) {
     setToasts((prev) => prev.filter((item) => item.key !== key))
   }
   function openSession(id) {
-    if (sessions === undefined || !id) return
-    try { sessions.open(id) } catch (err) {}
+    openSessionInView(getServices, id)
   }
 
   return h(React.Fragment, null,
@@ -915,12 +969,20 @@ function SettingsPage(props) {
 }
 
 // ---------- 插件入口 ----------
+/** 读取服务：应用阶段 ctx.get 存在竞态（inject 未声明 sessions），故惰性解析。 */
+function safeService(ctx, name) {
+  try { return ctx.get(name) } catch (err) { return undefined }
+}
+
 exports.name = 'dsh-complete-notify'
 exports.inject = ['slots', 'locale']
 exports.apply = function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-complete-notify: dictionaries')
   const t = ctx.locale.bind(NS)
-  const sessions = ctx.get('sessions')
+  const getServices = () => ({
+    sessions: safeService(ctx, 'sessions'),
+    workspace: safeService(ctx, 'uiWorkspace'),
+  })
 
   // 音效解锁：首次用户手势时创建/恢复 AudioContext（自动播放策略标准解法）
   ctx.effect(() => {
@@ -941,7 +1003,12 @@ exports.apply = function apply(ctx) {
     label: () => t('overlayLabel'),
     locale: NS,
     inject: () => ({ t }),
-  }, (props) => h(ToastHost, { useSessions: props ? props.useSessions : undefined, sessions, t })))
+  }, (props) => h(ToastHost, {
+    useSessions: props ? props.useSessions : undefined,
+    useSessionStatus: props ? props.useSessionStatus : undefined,
+    getServices,
+    t,
+  })))
 
   // 设置页
   ctx.slots.inject('settings.section', () => ctx.slots.register({
@@ -955,7 +1022,7 @@ exports.apply = function apply(ctx) {
 }
 
 // 单测钩子（客户端宿主会忽略该额外导出）
-exports.__test = { createWatcher, summarizeRun, formatDuration, formatTokens, buildStatsLine, cleanRecap, lastAnswerText, inferKind, kindMeta, emitTest, onTest, soundIdForKind, defaultSounds, detectPlatform, soundPresetIds: Object.keys(SOUND_PRESETS) }
+exports.__test = { createWatcher, summarizeRun, formatDuration, formatTokens, buildStatsLine, cleanRecap, lastAnswerText, inferKind, kindMeta, emitTest, onTest, soundIdForKind, defaultSounds, detectPlatform, soundPresetIds: Object.keys(SOUND_PRESETS), playSound, openSessionInView, isPendingStatus, isCompletionUnread, MASTER_GAIN }
 
 return module.exports;
 } });
