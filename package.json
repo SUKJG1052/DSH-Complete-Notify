@@ -1,6 +1,6 @@
 {
   "name": "dsh-complete-notify",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "任务完成时播放提示音并弹出小通知（页面内 toast + 后台时系统通知），按结果状态着色（完成/阻塞等待反馈/中断/失败），支持按操作系统选择音效预设、三状态独立音效，附带一句话小结（recap）与运行统计（时长/tokens/步骤）。纯浏览器方案，零系统依赖，跨 Windows/macOS/Linux。",
   "private": false,
   "type": "module",
@@ -27,6 +27,9 @@
     "cordis.patch.yml",
     "assets/cover.png",
     "assets/cover.svg",
+    "assets/screenshot-toast-completed.png",
+    "assets/screenshot-toast-blocked.png",
+    "assets/screenshot-toast-aborted.png",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -53,8 +56,9 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-session",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-theme"
       ],
@@ -68,7 +72,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "check": "node --check client/client.js && node --check lib/index.js && node --check tests/helpers.js && node --check tests/watcher.test.js && node --check tests/integration/*.test.js && node --check scripts/verify-plugin.mjs && node --check scripts/smoke-install.mjs",
+    "check": "node --check client/client.js && node --check lib/index.js && node scripts/check-syntax.mjs",
     "test": "npm run check && node --test tests/*.test.js && npm run test:integration",
     "test:integration": "node --test tests/integration/*.test.js",
     "verify:plugin": "node scripts/verify-plugin.mjs . --level=standard",

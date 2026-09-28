@@ -8,9 +8,14 @@ const root = resolve(process.argv[2] ?? '.')
 const home = mkdtempSync(join(tmpdir(), 'dsh-plugin-smoke-home-'))
 const packDir = mkdtempSync(join(tmpdir(), 'dsh-plugin-smoke-pack-'))
 
+// Windows 上 npm/dsh 都是 .cmd（Node ≥18.20 禁止不带 shell 直接执行 .cmd），
+// 因此统一走 shell；命令与参数拼成一条字符串，含空格的路径加引号。
+const quote = (value) => (/[\s"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value)
+
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const result = spawnSync([command, ...args.map(quote)].join(' '), {
     encoding: 'utf8',
+    shell: true,
     ...options,
     env: {
       ...process.env,

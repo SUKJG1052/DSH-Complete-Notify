@@ -22,16 +22,16 @@ DeepSeek Harness（DSH）任务完成通知插件：任务完成时播放**提�
 
 - **纯浏览器方案**：音效用 Web Audio 合成、弹窗是页面内 toast、页面在后台时改用系统通知（Web Notification API）——零系统依赖、零音频文件，Windows / macOS / Linux 通用
 - **不依赖任何系统通知命令**（无 osascript / notify-send / PowerShell），通知权限是浏览器站点级授权，授权一次即可
-- 与官方运行指示灯同源的完成检测：会话列表快照的 `running` / `completed` 状态
+- 与官方运行指示灯同源的完成检测：`shell.overlay` 标准 prop `useSessions`（会话列表快照的 `running` 边缘）+ `useSessionStatus`（`pendingInteraction` 阻塞、`completionUnread` 未读完成）
 - toast 与系统通知附带**运行统计**（时长 / tokens / 步骤）与**一句话小结**（💬 recap，≤50 字），点击直达对应会话
 
 ## 安装
 
 ```sh
-# 从 npm 安装（推荐）
+# 从本 fork 安装（含 0.6.3 的修复，推荐）
+dsh plugin --profile web add "github:SUKJG1052/DSH-Complete-Notify"
+# 或从 npm 安装上游版本
 dsh plugin --profile web add dsh-complete-notify
-# 或锁定 GitHub 版本
-dsh plugin --profile web add "github:kaixinbaba/dsh-complete-notify"
 # 重启 dsh web 生效（launchd 托管时）：
 launchctl kickstart -k gui/$(id -u)/com.dsh.dsh-web
 ```
@@ -85,12 +85,17 @@ dsh plugin --profile web add link:/path/to/dsh-complete-notify
 |---|---|
 | 页面可见，任一会话完成 | toast（小结 + 时长/token/steps）+ 对应状态音效 |
 | 页面在后台，会话完成 | 系统通知（含小结与统计）+ 对应状态音效 + 标题闪烁 |
+| 完成发生在别的会话（不在主视图） | 由 `completionUnread` 兜底提醒一次——即使完成瞬间页面刚刷新/被浏览器节流也能补上 |
+| 会话正在等待你的反馈（提问 / 审批挂起） | 立即弹黄色 toast + 阻塞音效（agent 仍在运行时也会提醒），此时不误报「任务完成」 |
 | 系统通知权限被拒 | 降级为长时 toast（30 秒，回来也能看到）+ 标题闪烁 |
 | 一次完成 | 只提醒一次（按会话去重，重新运行后再完成会再次提醒） |
+| 点击 toast / 系统通知 | 通过 `uiWorkspace.openSession()` 切到对应会话（≤0.1.5 回退 `sessions.open()`） |
 | 子代理（subagent）会话 | 不提醒 |
 | 多会话同时完成 | toast 栈最多 3 条（FIFO） |
 
 > 运行统计口径为「最后一轮」（turn 号最大的已结束轮次）：时长来自 `turnTimings`，tokens 为 assistant 消息 `usage` 的输入+输出之和，steps 为工具调用块数量。单轮任务即为本次运行的完整数据；多轮 goal 运行显示最后一轮。
+
+> 兼容性：完成/阻塞信号在 DSH **0.1.7-rc.2** 上实测；0.1.5 时代的会话行字段（`completed` / `pendingInteraction`）与 `sessions.open()` 仍保留回退分支。
 
 ## 已知限制
 
@@ -101,8 +106,9 @@ dsh plugin --profile web add link:/path/to/dsh-complete-notify
 ## 开发
 
 ```sh
-node --test          # 完成检测状态机 + 运行统计单测（通过 stub 执行同一份 client/client.js）
-npm run check        # 语法检查
+npm test             # 语法检查 + 单测（watcher / 音量 / 客户端适配 / 统计 / 宿主）+ 装配集成测试
+npm run verify:plugin  # DSH 插件标准校验（含 npm pack 制品检查）
+npm run smoke:install  # 在隔离 DSH_HOME 里真实安装一次（需要已安装 dsh）
 ```
 
 结构：
@@ -111,7 +117,8 @@ npm run check        # 语法检查
 lib/index.js      # 宿主入口（事件监听、recap LLM 与路由装配）
 client/client.js  # 客户端单文件（DSH 模块加载器格式；全部逻辑在此）
 cordis.patch.yml  # bundle insert 声明
-tests/            # node --test 单测
+tests/            # node --test 单测（夹具遵循真实投影形状）
+scripts/          # 语法检查 / 插件标准校验 / 隔离安装 smoke
 ```
 
 ## 卸载

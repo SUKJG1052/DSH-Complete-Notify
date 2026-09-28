@@ -3,6 +3,21 @@
 > 本文件顶部是**本 fork 的改动记录**；`0.6.2` 及以下为上游
 > [kaixinbaba/dsh-complete-notify](https://github.com/kaixinbaba/dsh-complete-notify) 的原始记录，未作改动。
 
+## 0.6.3 — 2026-09-28
+
+在 DSH **0.1.7-rc.2** 上实测复核后修复的一批缺陷（本地未提交补丁中真正有效的部分已并入仓库）：
+
+- **修复：LLM 一句话小结从未生成。** 宿主取「最终回答」时读 `session.events`，而 `Session` 没有这个成员（真名 `session.snapshotEvents()`）→ 恒为空 → `computeRecap` 永不执行，toast 里永远是客户端降级的「回答前 50 字」。现优先走 `snapshotEvents()`，旧字段仅作回退（`lib/index.js`）。
+- **修复：阻塞（黄色「等待你的反馈」）提醒从未触发。** 会话列表行从来没有 `pendingInteraction` 字段；0.1.7 的权威来源是 `useSessionStatus` 下发的 `sessionStatus`（`Map<sessionId, { running, pendingInteraction, completionUnread }>`）。现从该标准 prop 读取，并把 `statuses` 纳入检测 effect 的依赖（阻塞状态变化时列表快照可能完全没变）。
+- **修复：漏报后无法恢复。** 粘性完成信号 `entry.completed` 在 0.1.7 已从会话行移除，一旦「运行→停止」边缘没被看到（页面刷新、后台标签节流、订阅晚于完成时刻）就永久漏报。现以 `sessionStatus.completionUnread`（语义正是「不在主视图时完成」）兜底。
+- **修复：快照更新会掐断进行中的提醒。** 完成检测 effect 每次 diff 都返回 cleanup 取消上一轮异步通知，而 `notified` 去重又阻止重试 → 永久丢提醒。改为只在真正卸载时停止。
+- **修复：点击 toast / 系统通知打不开会话。** `sessions.open()` 是 ≤0.1.5 的入口，0.1.7 已移除（调用被 try/catch 静默吞掉）。现优先 `uiWorkspace.openSession()`，旧入口仅作回退。
+- **修复：音量越界与硬削波。** 移除未提交补丁中的 `VOLUME_BOOST = 10`（默认音量下 master gain = 6.0，峰值 ≈3.0，滑块约 10% 以上全程削波，比上游响 +20 dB）。改为固定管线增益 `MASTER_GAIN = 1.75`：默认音量峰值 ≈0.40、100% 时最响的预设 ≈0.67，全程 < 1.0，比上游响约 5 dB 且不失真。
+- **修复：服务读取竞态。** `ctx.get('sessions')` 由「激活时捕获」改为渲染/调用时惰性解析。
+- **工程：** `npm test` 在 Windows 上不再因 `node --check tests/integration/*.test.js` 的 glob 直接失败（新增 `scripts/check-syntax.mjs` 自行枚举文件）；`verify-plugin.mjs` / `smoke-install.mjs` 在 Windows 上能正确调用 `npm` / `dsh`（`.cmd` 需经 shell），打包校验不再抛 `Cannot read properties of undefined (reading 'trim')`；`files[]` 补上 README 引用的 3 张截图；`dsh.client.inject` 去掉运行版不存在的 `@deepseek-ai/dsh-client-runtime`，补上真正提供插槽与会话状态的 `@deepseek-ai/dsh-client-ui-slots`、`@deepseek-ai/dsh-client-ui-session`。
+- **测试：** 单测夹具改为**真实投影形状**（不再编造 `completed` / `pendingInteraction` / `current`），新增 `sessionStatus` 用例、音量峰值回归护栏（把 `playSound` 跑一遍并按 Web Audio 指数 ramp 重建包络）与会话打开/版本回退用例。单测 51 + 集成 4 全绿（此前 40 + 4 全绿却漏掉上述全部缺陷）。
+- 兼容：0.1.5 的 `completed` / `pendingInteraction` 行字段与 `sessions.open()` 仍走回退分支，旧版本行为不变。
+
 ## fork — 2026-09-28
 
 - 建立 fork，基线为上游 **v0.6.2**（commit `da84f428`）；保留 `LICENSE` 原文与完整上游提交历史。

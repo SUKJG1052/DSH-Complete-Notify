@@ -114,13 +114,19 @@ if (level === 'standard') {
 }
 
 if (shouldPack) {
-  const packed = spawnSync('npm', ['pack', '--json', '--dry-run', '--ignore-scripts'], {
+  // 以单个命令字符串 + shell 执行：Windows 上 `npm` 实际是 npm.cmd（Node ≥18.20
+  // 禁止不带 shell 直接执行 .cmd），而 shell:true 配 args 数组又会触发 DEP0190。
+  // 参数全为常量，不涉及注入面。
+  const packed = spawnSync('npm pack --json --dry-run --ignore-scripts', {
     cwd: root,
     encoding: 'utf8',
+    shell: true,
     env: { ...process.env, npm_config_registry: 'https://registry.npmjs.org/' },
   })
-  if (packed.status !== 0) {
-    fail(`npm pack --dry-run failed: ${(packed.stderr || packed.stdout).trim()}`)
+  if (packed.error !== undefined || packed.status !== 0) {
+    const detail = ((packed.stderr || '') + (packed.stdout || '')).trim()
+      || (packed.error !== undefined ? packed.error.message : 'command produced no output')
+    fail(`npm pack --dry-run failed${packed.status === null || packed.status === undefined ? '' : ` (exit ${packed.status})`}: ${detail}`)
   } else {
     try {
       const result = JSON.parse(packed.stdout)[0]
