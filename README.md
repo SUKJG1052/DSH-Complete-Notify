@@ -1,5 +1,14 @@
 # dsh-complete-notify
 
+> **来源声明 / Attribution**
+>
+> 本仓库是 [kaixinbaba/dsh-complete-notify](https://github.com/kaixinbaba/dsh-complete-notify) 的 **fork（衍生作品）**。
+> 上游作者与版权所有者：**kaixinbaba**；许可证 **[MIT](LICENSE)**（原文保留、未修改）。
+> 本仓库基于上游 **v0.6.2（commit `da84f428`）**；在此之上的改动见 [CHANGELOG](CHANGELOG.md) 与本仓库提交历史。
+>
+> This repository is a fork of [kaixinbaba/dsh-complete-notify](https://github.com/kaixinbaba/dsh-complete-notify),
+> distributed under the same MIT License. Upstream copyright is retained — see [LICENSE](LICENSE).
+
 <p align="center">
   <a href="https://www.npmjs.com/package/dsh-complete-notify"><img src="https://img.shields.io/npm/v/dsh-complete-notify" alt="npm version"></a>
   <a href="https://github.com/kaixinbaba/dsh-complete-notify/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/dsh-complete-notify" alt="license"></a>

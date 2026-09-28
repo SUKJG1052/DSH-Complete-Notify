@@ -1,5 +1,15 @@
 # Changelog
 
+> 本文件顶部是**本 fork 的改动记录**；`0.6.2` 及以下为上游
+> [kaixinbaba/dsh-complete-notify](https://github.com/kaixinbaba/dsh-complete-notify) 的原始记录，未作改动。
+
+## fork — 2026-09-28
+
+- 建立 fork，基线为上游 **v0.6.2**（commit `da84f428`）；保留 `LICENSE` 原文与完整上游提交历史。
+- 新增代码审查报告 `REVIEW-0.6.2-and-local-patch.md`（只读审查，不含任何代码改动）。
+- 待修复项见该报告第 6 节：音量回归（`VOLUME_BOOST`）、阻塞提醒来源（应为 `useSessionStatus`）、
+  宿主 recap 的 `session.snapshotEvents()`、以及 `entry.completed` 缺失导致的漏报。
+
 ## 0.6.2 — 2026-08-23
 
 - 修复：同一会话连续运行时立即废弃上一轮 recap，并阻止较慢的旧轮异步结果覆盖新轮摘要，避免完成通知显示落后一轮的小结。
