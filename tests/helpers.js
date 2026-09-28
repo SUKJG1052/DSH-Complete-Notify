@@ -55,7 +55,14 @@ export const playSound = bundle.__test.playSound
 export const openSessionInView = bundle.__test.openSessionInView
 export const isPendingStatus = bundle.__test.isPendingStatus
 export const isCompletionUnread = bundle.__test.isCompletionUnread
+export const softClip = bundle.__test.softClip
+export const normalizeVolume = bundle.__test.normalizeVolume
+export const limitCurve = bundle.__test.limitCurve
 export const MASTER_GAIN = bundle.__test.MASTER_GAIN
+export const VOLUME_MAX = bundle.__test.VOLUME_MAX
+export const LIMIT_KNEE = bundle.__test.LIMIT_KNEE
+export const LIMIT_DRIVE = bundle.__test.LIMIT_DRIVE
+export const DEFAULT_CFG = bundle.__test.DEFAULT_CFG
 
 /** 简体中文文案 stub（t('key') → 值）。 */
 export const tZh = (key) => ({

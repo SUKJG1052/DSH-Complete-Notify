@@ -27,13 +27,47 @@ const { useState, useEffect, useRef } = React
 
 const NS = 'complete-notify'
 const STORAGE_KEY = 'dsh.completeNotify.v1'
-const DEFAULT_CFG = { enabled: true, sound: true, systemNotify: true, volume: 0.6 }
+const VOLUME_MAX = 1.5   // 音量滑块上限 150%
+const DEFAULT_CFG = { enabled: true, sound: true, systemNotify: true, volume: 0.8 }
 
-// 音量：滑块 0–100% → volume ∈ [0,1]；管线再乘一个固定增益，让提示音更容易被听见。
-// 声压实测（含 master 指数衰减 + 音符重叠）：100% 时最响的预设峰值 ≈0.67，默认 60%
-// 时 ≈0.40（比不加增益响约 5 dB），始终留在 [0,1] 内 —— 越过 1.0 会被输出级硬削波，
-// 那是失真而不是「更响」。改这个常量前请跑 tests/volume.test.js。
-const MASTER_GAIN = 1.75
+// 音量与限幅：
+//   滑块 0–150% → volume ∈ [0, VOLUME_MAX]；master gain = volume × MASTER_GAIN。
+//   100% 时 MASTER_GAIN 已把最响的预设推到接近满刻度（≈0.94）；再往上若不处理就会
+//   撞上输出级的**硬削波**（刺耳的方波化失真）。所以 100% 以上走**软限幅**：
+//   |x| ≤ knee 完全线性（默认音量落在这段，音色零改变），之上用 tanh 平滑饱和到 ±1。
+//   峰值不再超过满刻度，而衰减尾巴被整体抬起来（RMS 更高 = 听感更响）。
+//   改这些常量前请跑 tests/volume.test.js（它按 Web Audio 语义重建包络并求峰值/能量）。
+const MASTER_GAIN = 2.55
+const LIMIT_KNEE = 0.8    // 完全线性的输入上限
+const LIMIT_DRIVE = 2.2   // 软限幅曲线的输入跨度（WaveShaper 定义域 [-1,1] ↔ ±LIMIT_DRIVE）
+const LIMIT_CURVE_SIZE = 2048
+
+/** 软限幅传递函数：|x| ≤ knee 时恒等，之上平滑饱和（输出始终 < 1）。 */
+function softClip(x) {
+  const a = x < 0 ? -x : x
+  if (a <= LIMIT_KNEE) return x
+  const saturated = LIMIT_KNEE + (1 - LIMIT_KNEE) * Math.tanh((a - LIMIT_KNEE) / (1 - LIMIT_KNEE))
+  return x < 0 ? -saturated : saturated
+}
+
+let limitCurveCache = null
+/** WaveShaper 查表曲线：定义域输入 u ∈ [-1,1] 代表 x = u × LIMIT_DRIVE。 */
+function limitCurve() {
+  if (limitCurveCache === null) {
+    limitCurveCache = new Float32Array(LIMIT_CURVE_SIZE)
+    for (let i = 0; i < LIMIT_CURVE_SIZE; i++) {
+      const u = (i / (LIMIT_CURVE_SIZE - 1)) * 2 - 1
+      limitCurveCache[i] = softClip(u * LIMIT_DRIVE)
+    }
+  }
+  return limitCurveCache
+}
+
+/** 音量归一化：非数字/负值回落默认；超过上限截到上限（绝不越界放大）。 */
+function normalizeVolume(value) {
+  if (typeof value !== 'number' || !isFinite(value) || value < 0) return DEFAULT_CFG.volume
+  return value > VOLUME_MAX ? VOLUME_MAX : value
+}
 
 // ---------- 跨平台音效预设（Web Audio 合成，不读取系统原生声音文件） ----------
 // 每个预设只描述振荡器频率/时序/波形；因此 Windows/macOS/Linux 都能用。
@@ -166,6 +200,7 @@ const zh = {
   soundLabel: '提示音',
   systemLabel: '系统通知（页面在后台时）',
   volumeLabel: '音量',
+  volumeHint: '100% 已接近满音量；100% 以上使用软限幅（不会硬削波，只是把衰减尾巴抬起来，听感更响）',
   unitMin: '分',
   unitSec: '秒',
   testSound: '测试音效',
@@ -204,6 +239,7 @@ const en = {
   soundLabel: 'Sound',
   systemLabel: 'System notification (page in background)',
   volumeLabel: 'Volume',
+  volumeHint: '100% is already near full scale; above 100% uses soft limiting (no hard clipping — it lifts the decay tail and sounds louder)',
   unitMin: 'm',
   unitSec: 's',
   testSound: 'Test sound',
@@ -237,9 +273,11 @@ function getCfg() {
     const defaults = defaultCfg()
     if (!raw) return defaults
     const stored = JSON.parse(raw)
-    return Object.assign({}, defaults, stored, {
+    const merged = Object.assign({}, defaults, stored, {
       sounds: Object.assign({}, defaults.sounds, stored && stored.sounds ? stored.sounds : {}),
     })
+    merged.volume = normalizeVolume(merged.volume)
+    return merged
   } catch (err) {
     return defaultCfg()
   }
@@ -368,7 +406,7 @@ function unlockAudio() {
 function playSound(soundId, volume) {
   const preset = SOUND_PRESETS[soundId] || SOUND_PRESETS['soft-chime']
   if (!preset || !Array.isArray(preset.notes) || preset.notes.length === 0) return
-  const vol = typeof volume === 'number' && volume >= 0 && volume <= 1 ? volume : DEFAULT_CFG.volume
+  const vol = normalizeVolume(volume)
   const ctx = ensureAudio()
   if (ctx === null) return
   const play = () => {
@@ -378,7 +416,20 @@ function playSound(soundId, volume) {
       const master = ctx.createGain()
       master.gain.setValueAtTime(vol * MASTER_GAIN, t0)
       master.gain.exponentialRampToValueAtTime(0.0001, t0 + decay)
-      master.connect(ctx.destination)
+      // 软限幅级：pre-gain 把信号压进 WaveShaper 的 [-1,1] 定义域，曲线在 knee 以下
+      // 与 1/LIMIT_DRIVE 的线性段重合 → 默认音量完全透明，只有推过 100% 才饱和。
+      if (typeof ctx.createWaveShaper === 'function') {
+        const pre = ctx.createGain()
+        pre.gain.setValueAtTime(1 / LIMIT_DRIVE, t0)
+        const shaper = ctx.createWaveShaper()
+        shaper.curve = limitCurve()
+        shaper.oversample = '2x'
+        master.connect(pre)
+        pre.connect(shaper)
+        shaper.connect(ctx.destination)
+      } else {
+        master.connect(ctx.destination) // 极旧浏览器：退化为无软限幅
+      }
       for (const n of preset.notes) {
         const osc = ctx.createOscillator()
         osc.type = n.type || 'sine'
@@ -948,10 +999,11 @@ function SettingsPage(props) {
       h('input', { type: 'checkbox', checked: cfg.systemNotify !== false, onChange: (e) => update({ systemNotify: e.target.checked }) })),
     h(Row, { label: t('volumeLabel') },
       h('input', {
-        type: 'range', min: 0, max: 100, value: Math.round((cfg.volume ?? DEFAULT_CFG.volume) * 100),
+        type: 'range', min: 0, max: 150, value: Math.round((cfg.volume ?? DEFAULT_CFG.volume) * 100),
         onChange: (e) => update({ volume: Number(e.target.value) / 100 }),
         style: { width: 150 },
       })),
+    h('p', { style: { margin: '6px 0 0', opacity: 0.6, fontSize: 11 } }, t('volumeHint')),
     h(Row, { label: t('soundCompleted') }, h(SoundSelect, { kind: 'completed', cfg, t, onChange: updateSound })),
     h(Row, { label: t('soundBlocked') }, h(SoundSelect, { kind: 'blocked', cfg, t, onChange: updateSound })),
     h(Row, { label: t('soundAborted') }, h(SoundSelect, { kind: 'aborted', cfg, t, onChange: updateSound })),
@@ -1022,7 +1074,7 @@ exports.apply = function apply(ctx) {
 }
 
 // 单测钩子（客户端宿主会忽略该额外导出）
-exports.__test = { createWatcher, summarizeRun, formatDuration, formatTokens, buildStatsLine, cleanRecap, lastAnswerText, inferKind, kindMeta, emitTest, onTest, soundIdForKind, defaultSounds, detectPlatform, soundPresetIds: Object.keys(SOUND_PRESETS), playSound, openSessionInView, isPendingStatus, isCompletionUnread, MASTER_GAIN }
+exports.__test = { createWatcher, summarizeRun, formatDuration, formatTokens, buildStatsLine, cleanRecap, lastAnswerText, inferKind, kindMeta, emitTest, onTest, soundIdForKind, defaultSounds, detectPlatform, soundPresetIds: Object.keys(SOUND_PRESETS), playSound, openSessionInView, isPendingStatus, isCompletionUnread, softClip, normalizeVolume, limitCurve, MASTER_GAIN, VOLUME_MAX, LIMIT_KNEE, LIMIT_DRIVE, DEFAULT_CFG }
 
 return module.exports;
 } });
