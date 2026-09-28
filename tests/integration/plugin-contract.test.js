@@ -95,7 +95,11 @@ test('host apply wires listeners and recap route with protocol handling', async 
   assert.equal(fixture.routes[0].path, '/dsh-complete-notify/recap')
 
   fixture.listeners.get('session/event')({ header: { id: 'session-1' } }, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
-  const session = { header: { id: 'session-1' }, events: [{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '完成测试任务' }] } } }] }
+  const session = {
+    header: { id: 'session-1' },
+    // 真实 Session 只有 snapshotEvents()（无公开 events 成员）
+    snapshotEvents: () => [{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '完成测试任务' }] } } }],
+  }
   fixture.listeners.get('agent/status')({ status: 'idle', agent: { id: 'session-1', session } })
   await new Promise((resolve) => setImmediate(resolve))
   const get = await responseFor(fixture.routes[0], 'GET', '/dsh-complete-notify/recap?sessionId=session-1')

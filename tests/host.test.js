@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, __test } from '../lib/index.js'
 
-const { cleanRecap, lastAnswerText, kindOfEvent } = __test
+const { cleanRecap, lastAnswerText, kindOfEvent, sessionEvents } = __test
 
 test('host cleanRecap：去 markdown 噪音 + 折叠空白', () => {
   assert.equal(cleanRecap('  **修复** 了 `登录` bug  '), '修复 了 登录 bug')
@@ -24,33 +24,43 @@ test('host cleanRecap：超过 50 字截断加省略号', () => {
   assert.ok(out.endsWith('…'))
 })
 
-test('host lastAnswerText：倒序取最后一条 assistant/message 的纯文本', () => {
-  const session = {
-    events: [
-      { type: 'user/message', data: {} },
-      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '第一轮回答' }] } } },
-      { type: 'tool/call', data: {} },
-      {
-        type: 'assistant/message',
-        data: {
-          message: {
-            content: [
-              { type: 'text', text: '最终回答第一段' },
-              { type: 'tool-call', callId: 'c', name: 'bash', argsRaw: '{}' },
-              { type: 'text', text: '最终回答第二段' },
-            ],
-          },
+test('host lastAnswerText：倒序取最后一条 assistant/message 的纯文本（真实 snapshotEvents）', () => {
+  const events = [
+    { type: 'user/message', data: {} },
+    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '第一轮回答' }] } } },
+    { type: 'tool/call', data: {} },
+    {
+      type: 'assistant/message',
+      data: {
+        message: {
+          content: [
+            { type: 'text', text: '最终回答第一段' },
+            { type: 'tool-call', callId: 'c', name: 'bash', argsRaw: '{}' },
+            { type: 'text', text: '最终回答第二段' },
+          ],
         },
       },
-    ],
-  }
-  assert.equal(lastAnswerText(session), '最终回答第一段\n最终回答第二段')
+    },
+  ]
+  assert.equal(lastAnswerText({ snapshotEvents: () => events }), '最终回答第一段\n最终回答第二段')
+})
+
+test('host sessionEvents：优先 snapshotEvents，仅在缺失时回退旧 events 字段', () => {
+  const snapshot = [{ type: 'assistant/message', data: {} }]
+  const legacy = [{ type: 'user/message', data: {} }]
+  assert.deepEqual(sessionEvents({ snapshotEvents: () => snapshot, events: legacy }), snapshot)
+  assert.deepEqual(sessionEvents({ events: legacy }), legacy)
+  assert.deepEqual(sessionEvents({ snapshotEvents: () => 'nonsense', events: legacy }), legacy)
+  assert.deepEqual(sessionEvents({ snapshotEvents() { throw new Error('released') }, events: legacy }), legacy)
+  assert.deepEqual(sessionEvents(null), [])
+  assert.deepEqual(sessionEvents({}), [])
 })
 
 test('host lastAnswerText：无 assistant 文本返回空串', () => {
-  assert.equal(lastAnswerText({ events: [] }), '')
+  assert.equal(lastAnswerText({ snapshotEvents: () => [] }), '')
   assert.equal(lastAnswerText(null), '')
-  assert.equal(lastAnswerText({ events: [{ type: 'user/message', data: {} }] }), '')
+  assert.equal(lastAnswerText({ snapshotEvents: () => [{ type: 'user/message', data: {} }] }), '')
+  assert.equal(lastAnswerText({ events: [{ type: 'user/message', data: {} }] }), '') // 旧字段回退
 })
 
 test('host kindOfEvent：提取 turn/end 结果状态', () => {
@@ -100,7 +110,7 @@ function createHostHarness(options = {}) {
     emitRunning(sessionId) {
       listeners.get('agent/status')({
         status: 'running',
-        agent: { id: sessionId, session: { header: { id: sessionId }, events: [] } },
+        agent: { id: sessionId, session: { header: { id: sessionId }, snapshotEvents: () => [] } },
       })
     },
     emitIdle(sessionId, answer) {
@@ -110,7 +120,7 @@ function createHostHarness(options = {}) {
           id: sessionId,
           session: {
             header: { id: sessionId },
-            events: [{
+            snapshotEvents: () => [{
               type: 'assistant/message',
               data: { message: { content: [{ type: 'text', text: answer }] } },
             }],
