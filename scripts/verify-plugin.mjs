@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from 'node:fs'
-import { basename, resolve } from 'node:path'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { basename, extname, isAbsolute, resolve, win32 } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 const args = process.argv.slice(2)
@@ -101,6 +101,79 @@ for (const file of ['README.md', 'LICENSE']) {
   check(existsSync(resolve(root, file)), `required published file is missing: ${file}`)
 }
 
+// --- 插件展示元数据（DSH 0.2.0 的读取方式）---
+// dsh-app-boot 的 readPluginMeta 只认这三处：package.json#icon（相对路径，SVG/PNG/
+// JPEG/WebP，≤256 KiB，须在包内）、导出可见的 locale/<lang>.json 里的 meta.title /
+// meta.description，以及 package.json 的 name / description 兜底。dsh.displayName
+// 之类的字段从来不会被读取。
+const MANIFEST_KEYS = new Set(['manifestVersion', 'bundle', 'profile', 'client'])
+const ICON_MEDIA_TYPES = new Map([
+  ['.svg', 'image/svg+xml'],
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.webp', 'image/webp'],
+])
+const MAX_ICON_BYTES = 256 * 1024
+const LANGUAGE_ID = /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/
+
+if (manifest.dsh !== undefined) {
+  if (typeof manifest.dsh !== 'object' || manifest.dsh === null || Array.isArray(manifest.dsh)) {
+    fail('package.json dsh must be an object')
+  } else {
+    for (const key of Object.keys(manifest.dsh)) {
+      if (!MANIFEST_KEYS.has(key)) warn(`dsh.${key} is not part of the DSH manifest schema and is never read (display metadata comes from package.json#icon and locale/*.json)`)
+    }
+    if ('manifestVersion' in manifest.dsh) check(manifest.dsh.manifestVersion === 1, 'dsh.manifestVersion must be 1')
+  }
+}
+
+let iconPath = null
+if (manifest.icon === undefined) {
+  warn('recommended: declare package.json#icon so the plugin manager can show a plugin icon')
+} else {
+  check(typeof manifest.icon === 'string' && manifest.icon.trim() !== '', 'package.json icon must be a non-empty string')
+  if (typeof manifest.icon === 'string' && manifest.icon.trim() !== '') {
+    const icon = manifest.icon
+    check(!isAbsolute(icon) && !win32.isAbsolute(icon) && !/^[A-Za-z][A-Za-z\d+.-]*:/u.test(icon), 'package.json icon must be a relative file path')
+    check(ICON_MEDIA_TYPES.has(extname(icon).toLowerCase()), 'package.json icon must be SVG, PNG, JPEG, or WebP')
+    const file = resolve(root, icon)
+    check(existsSync(file), `icon file does not exist: ${icon}`)
+    if (existsSync(file)) {
+      const stat = statSync(file)
+      check(stat.isFile(), `icon must be a regular file: ${icon}`)
+      check(stat.size <= MAX_ICON_BYTES, `icon exceeds 256 KiB: ${icon}`)
+      iconPath = icon.replace(/^\.\//, '')
+    }
+  }
+}
+
+const localeDir = resolve(root, 'locale')
+let englishLocalePath = null
+if (existsSync(localeDir)) {
+  const entries = readdirSync(localeDir)
+  check(entries.includes('en.json'), 'locale/en.json is required when a locale directory is shipped (it is the anchor for every other language file)')
+  const localeExport = exportTarget(exportsField, './locale/*.json')
+  check(localeExport !== null, 'exports must expose "./locale/*.json": "./locale/*.json" for DSH to resolve locale dictionaries')
+  for (const entry of entries) {
+    if (!entry.endsWith('.json')) {
+      fail(`locale/${entry} must be a .json file (every file in the directory is read as a dictionary)`)
+      continue
+    }
+    check(LANGUAGE_ID.test(entry.slice(0, -5)), `locale/${entry} must use a language id as its filename`)
+    const parsed = readJson(resolve(localeDir, entry), `locale/${entry}`)
+    if (parsed === null) continue
+    const meta = parsed.meta
+    check(typeof meta === 'object' && meta !== null && !Array.isArray(meta), `locale/${entry} must carry a meta object`)
+    if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) continue
+    for (const field of ['title', 'description']) {
+      if (meta[field] === undefined) continue
+      check(typeof meta[field] === 'string' && meta[field].trim() !== '', `locale/${entry}: meta.${field} must be a non-empty string`)
+    }
+  }
+  if (entries.includes('en.json')) englishLocalePath = 'locale/en.json'
+}
+
 if (level === 'standard') {
   check(manifest.private === false, 'standard requires explicit private:false')
   check(typeof manifest.engines?.node === 'string', 'standard requires engines.node')
@@ -136,6 +209,8 @@ if (shouldPack) {
         typeof patch === 'string' ? patch.replace(/^\.\//, '') : null,
         exportTarget(exportsField, '.')?.replace(/^\.\//, ''),
         clientTarget?.replace(/^\.\//, ''),
+        iconPath,
+        englishLocalePath,
       ].filter(Boolean)
       for (const required of requiredPaths) check(paths.has(required), `packed artifact is missing ${required}`)
       for (const path of paths) {

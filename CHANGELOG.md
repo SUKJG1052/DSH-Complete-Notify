@@ -3,6 +3,17 @@
 > 本文件顶部是**本 fork 的改动记录**；`0.6.2` 及以下为上游
 > [kaixinbaba/dsh-complete-notify](https://github.com/kaixinbaba/dsh-complete-notify) 的原始记录，未作改动。
 
+## 0.6.5 — 2026-09-29
+
+适配 DSH **0.2.0-rc.1**（运行时已升级；0.2.0 引入了插件兼容性门禁与新的插件元数据读取方式）。
+
+- **声明运行时兼容窗口，接入 0.2.0 的兼容性门禁。** DSH 0.2.0 起，安装与 profile 启动会按插件声明的 `@deepseek-ai/dsh*` peer 范围对照 `dsh --version` 判定，不满足者被明确拒绝加载（可 `dsh plugin allow-version` 精确豁免）。本插件此前只声明了 `@deepseek-ai/cordis`，等于**没有声明**，门禁无从判定。现声明真正绑定的 8 个运行时包（`dsh-session`、`dsh-llm`、`dsh-agent`、`dsh-agent-default-model`、`dsh-host-webserver`、`dsh-client-ui-slots`、`dsh-client-ui-session`、`dsh-client-locale`），范围为 `>=0.1.5-0 <0.3.0-0`，并与 `engines.dsh` 保持一致。这些 peer 标记 `optional`——由 DSH 运行时提供，不让 npm/pnpm 再拉一棵树。
+- **采用 0.2.0 的插件展示元数据。** 新增 `package.json#icon`（`assets/icon.svg`，包内相对路径、≤256 KiB）与导出的 `locale/en.json` / `locale/zh.json`（`meta.title` / `meta.description`），插件管理器据此显示 **Completion Notify / 任务完成通知** 与对应简介；`exports` 增加 `"./locale/*.json"`，否则 DSH 的 ESM 解析取不到词典。
+- **移除死配置。** 删除 `dsh.displayName` / `dsh.category` / `dsh.image`（DSH 从不读取这些字段；`dsh` 清单只认 `manifestVersion` / `bundle` / `profile` / `client`），并补上 `manifestVersion: 1`。
+- **`verify-plugin.mjs` 增加元数据校验**：图标必须是包内相对路径、合法扩展名、≤256 KiB；`locale/` 下每个 `.json` 的文件名必须是语言 id、必须有 `en.json`、必须被 `exports` 暴露；`dsh.*` 出现 schema 之外的键会告警；打包检查要求图标与 `locale/en.json` 实际进入 tarball。
+- **新增 `tests/manifest.test.js`**（5 个用例）锁定上述清单契约，含「不得再引用已删除的 `@deepseek-ai/dsh-client-runtime`」「dsh peer 范围必须覆盖 ≤0.2 且排除 0.3」。
+- **复核结论（只读核对，无需改代码）**：0.2.0-rc.1 与本插件用到的全部平台契约一致——`shell.overlay` / `settings.section` 的标准 prop 仍含 `useSessions` + `useSessionStatus`，`ui-session` 的 `sessionStatus` 形态（`running` / `pendingInteraction` / `completionUnread`）未变，`Session.snapshotEvents()`、`UiWorkspace.openSession()`、`webServer.register({kind:'exact'})`、`agent/status` 载荷、`turn/end.reason.kind`、`ctx.locale.register(ns, dicts)` 与 `ctx.slots.register({..., inject: () => ({})})` 均照旧；插件已在运行中的 0.2.0-rc.1 客户端模块清单里正常下发，宿主 recap 路由正常响应。
+
 ## 0.6.4 — 2026-09-28
 
 音量上限与响度（反馈「声音不够大」）：

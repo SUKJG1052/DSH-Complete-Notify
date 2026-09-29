@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Completion Notify",
+    "description": "Plays a sound and shows a state-colored popup when a DSH task finishes, with run stats and a one-line LLM recap (a system notification while the page is in the background)."
+  }
+}

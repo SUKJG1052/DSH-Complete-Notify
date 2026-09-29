@@ -28,7 +28,7 @@ DeepSeek Harness（DSH）任务完成通知插件：任务完成时播放**提�
 ## 安装
 
 ```sh
-# 从本 fork 安装（含 0.6.3 的修复，推荐）
+# 从本 fork 安装（含 0.6.3–0.6.5 的修复，推荐）
 dsh plugin --profile web add "github:SUKJG1052/DSH-Complete-Notify"
 # 或从 npm 安装上游版本
 dsh plugin --profile web add dsh-complete-notify
@@ -111,7 +111,22 @@ dsh plugin --profile web add link:/path/to/dsh-complete-notify
 
 > 运行统计口径为「最后一轮」（turn 号最大的已结束轮次）：时长来自 `turnTimings`，tokens 为 assistant 消息 `usage` 的输入+输出之和，steps 为工具调用块数量。单轮任务即为本次运行的完整数据；多轮 goal 运行显示最后一轮。
 
-> 兼容性：完成/阻塞信号在 DSH **0.1.7-rc.2** 上实测；0.1.5 时代的会话行字段（`completed` / `pendingInteraction`）与 `sessions.open()` 仍保留回退分支。
+> 兼容性：完成/阻塞信号在 DSH **0.1.7-rc.2 与 0.2.0-rc.1** 上实测（两版的插槽标准 prop、`sessionStatus` 形态、`Session.snapshotEvents()`、`uiWorkspace.openSession()` 逐项核对过）；0.1.5 时代的会话行字段（`completed` / `pendingInteraction`）与 `sessions.open()` 仍保留回退分支。
+
+### DSH 版本与插件元数据
+
+- **支持的运行时窗口：`>=0.1.5-0 <0.3.0-0`**（`engines.dsh` 与 `peerDependencies` 一致声明）。
+  DSH 0.2.0 起，安装与 profile 启动会按插件声明的 `@deepseek-ai/dsh*` peer 范围对照 `dsh --version`
+  做**兼容性门禁**：不满足的插件会被明确拒绝加载（并提示 `dsh plugin allow-version` 精确版本豁免），
+  而不是带着不匹配的契约静默运行。本插件声明了它真正绑定的 8 个运行时包
+  （`dsh-session` / `dsh-llm` / `dsh-agent` / `dsh-agent-default-model` / `dsh-host-webserver` /
+  `dsh-client-ui-slots` / `dsh-client-ui-session` / `dsh-client-locale`），因此
+  **0.2.0-rc.1 上不会被跳过**；升到 0.3.0 时会被门禁挡下并给出明确提示。
+  这些 peer 标记为 `optional`——它们由 DSH 运行时提供，不需要 npm 再装一份。
+- **插件展示信息**走 0.2.0 的读取方式：`package.json#icon`（`assets/icon.svg`）+ 导出的
+  `locale/en.json` / `locale/zh.json` 里的 `meta.title` / `meta.description`。插件管理器里显示为
+  **Completion Notify / 任务完成通知** 与对应简介；`dsh.displayName` / `dsh.category` / `dsh.image`
+  这类字段 DSH 从不读取，已从清单中移除（`npm run verify:plugin` 会对它们告警）。
 
 ## 已知限制
 
